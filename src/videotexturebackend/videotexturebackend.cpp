@@ -611,6 +611,10 @@ bool NemoVideoTextureBackend::init(QMediaService *service)
         return false;
     }
 
+    if (!service) {
+        return false;
+    }
+
     QMediaControl *control = service->requestControl(QGStreamerVideoSinkControl_iid);
     if (control) {
         m_control = qobject_cast<QGStreamerElementControl *>(control);
