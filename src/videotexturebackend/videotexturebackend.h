@@ -215,13 +215,17 @@ private:
     QSize m_nativeSize;
     QSize m_textureSize;
     QSize m_implicitSize;
+    QSize m_pendingTextureSize;
+    QSize m_pendingImplicitSize;
     gulong m_probeId;
     gulong m_showFrameId;
     gulong m_buffersInvalidatedId;
     int m_orientation;
     int m_textureOrientation;
+    int m_pendingTextureOrientation;
     bool m_mirror;
     bool m_geometryChanged;
+    bool m_havePendingTextureState;
     bool m_filtersChanged;
     bool m_buffersInvalidated;
 

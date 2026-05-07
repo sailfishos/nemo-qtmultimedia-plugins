@@ -489,8 +489,10 @@ NemoVideoTextureBackend::NemoVideoTextureBackend(QDeclarativeVideoOutput *parent
     , m_buffersInvalidatedId(0)
     , m_orientation(0)
     , m_textureOrientation(0)
+    , m_pendingTextureOrientation(0)
     , m_mirror(false)
     , m_geometryChanged(false)
+    , m_havePendingTextureState(false)
     , m_filtersChanged(false)
     , m_buffersInvalidated(false)
 {
@@ -834,16 +836,34 @@ bool NemoVideoTextureBackend::event(QEvent *event)
 void NemoVideoTextureBackend::show_frame(GstVideoSink *, GstBuffer *buffer, void *data)
 {
     NemoVideoTextureBackend *instance = static_cast<NemoVideoTextureBackend *>(data);
+    QResizeEvent *resizeEvent = nullptr;
 
     QMutexLocker locker(&instance->m_mutex);
 
     GstBuffer * const bufferToRelease = instance->m_queuedBuffer;
     instance->m_queuedBuffer = buffer ? gst_buffer_ref(buffer) : nullptr;
 
+    if (buffer && instance->m_havePendingTextureState) {
+        instance->m_textureSize = instance->m_pendingTextureSize;
+        instance->m_implicitSize = instance->m_pendingImplicitSize;
+        instance->m_textureOrientation = instance->m_pendingTextureOrientation;
+        instance->m_havePendingTextureState = false;
+        instance->m_geometryChanged = true;
+
+        const QSize implicitSize = (instance->m_textureOrientation % 180 != 0)
+                ? instance->m_implicitSize.transposed()
+                : instance->m_implicitSize;
+        resizeEvent = new QResizeEvent(implicitSize, implicitSize);
+    }
+
     locker.unlock();
 
     if (bufferToRelease) {
         gst_buffer_unref(bufferToRelease);
+    }
+
+    if (resizeEvent) {
+        QCoreApplication::postEvent(instance, resizeEvent);
     }
 
     instance->requestUpdate();
@@ -873,15 +893,20 @@ GstPadProbeReturn NemoVideoTextureBackend::probe(GstPad *, GstPadProbeInfo *info
 
     QMutexLocker locker(&instance->m_mutex);
 
-    QSize implicitSize = instance->m_implicitSize;
-    int orientation = instance->m_textureOrientation;
-    bool geometryChanged = false;
+    QSize implicitSize = instance->m_havePendingTextureState
+            ? instance->m_pendingImplicitSize
+            : instance->m_implicitSize;
+    QSize textureSize = instance->m_havePendingTextureState
+            ? instance->m_pendingTextureSize
+            : instance->m_textureSize;
+    int orientation = instance->m_havePendingTextureState
+            ? instance->m_pendingTextureOrientation
+            : instance->m_textureOrientation;
+    bool textureStateChanged = false;
 
     if (GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
         GstCaps *caps;
         gst_event_parse_caps(event, &caps);
-
-        QSize textureSize;
 
         const GstStructure *structure = gst_caps_get_structure(caps, 0);
         gst_structure_get_int(structure, "width", &textureSize.rwidth());
@@ -895,8 +920,7 @@ GstPadProbeReturn NemoVideoTextureBackend::probe(GstPad *, GstPadProbeInfo *info
             implicitSize.setWidth(implicitSize.width() * numerator / denominator);
         }
 
-        instance->m_textureSize = textureSize;
-        geometryChanged = true;
+        textureStateChanged = true;
     } else if (GST_EVENT_TYPE(event) == GST_EVENT_TAG) {
         GstTagList *tags;
         gst_event_parse_tag(event, &tags);
@@ -915,23 +939,21 @@ GstPadProbeReturn NemoVideoTextureBackend::probe(GstPad *, GstPadProbeInfo *info
         }
 
         g_free(orientationTag);
+        textureStateChanged = true;
     } else if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
         orientation = 0;
+        textureStateChanged = true;
     }
 
-    if (instance->m_textureOrientation != orientation || instance->m_implicitSize != implicitSize) {
-        instance->m_implicitSize = implicitSize;
-        instance->m_textureOrientation= orientation;
-        instance->m_geometryChanged = true;
-
-        if (orientation % 180 != 0) {
-            implicitSize.transpose();
-        }
-
-        QCoreApplication::postEvent(instance, new QResizeEvent(implicitSize, implicitSize));
-    } else if (geometryChanged) {
-        instance->m_geometryChanged = true;
-        QCoreApplication::postEvent(instance, new QEvent(QEvent::UpdateRequest));
+    if (textureStateChanged
+            && (instance->m_textureSize != textureSize
+                || instance->m_implicitSize != implicitSize
+                || instance->m_textureOrientation != orientation
+                || instance->m_havePendingTextureState)) {
+        instance->m_pendingTextureSize = textureSize;
+        instance->m_pendingImplicitSize = implicitSize;
+        instance->m_pendingTextureOrientation = orientation;
+        instance->m_havePendingTextureState = true;
     }
 
     return GST_PAD_PROBE_OK;
